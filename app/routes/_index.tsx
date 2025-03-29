@@ -22,12 +22,17 @@ interface GameState {
   correctFeatures: string[];
   gameFinished: boolean;
   gameStarted: boolean;
+  attemptsRemaining: number; // New: Attempts remaining
+  maxAttempts: number;      // New: Maximum attempts allowed
+  winThreshold: number;     // New: Threshold of features to guess to win
   // User inputs stored to repopulate form
   userInput: {
       age: string;
       level: string;
       style: string;
       topic: string;
+      attempts: string; // Input value as string
+      threshold: string; // Input value as string
   } | null;
 }
 
@@ -46,16 +51,18 @@ export const loader = async ({ request }: LoaderFunctionArgs): Promise<LoaderDat
   const age = url.searchParams.get("age") || '';
   const style = url.searchParams.get("style") || 'any';
   const topic = url.searchParams.get("topic") || 'any subject'; // Get topic
+  const attempts = url.searchParams.get("attempts") || '10'; // Default attempts
+  const threshold = url.searchParams.get("threshold") || '4'; // Default threshold
 
   // Construct a prompt for potential image generation
   const imageGenPrompt = `Generate an image suitable for a ${difficulty} description game. The user's age is ${age || 'unspecified'}. The desired style is ${style}. The image should focus on the topic: ${topic}.`;
 
-  // --- Attempt Dynamic Image Generation (Simulated) ---
+  // --- Attempt Dynamic Image Generation (Real Gemini API) ---
   let generatedImageData: ImageData | null = null;
-  const dynamicImageResult = await generateImage(imageGenPrompt); // This returns null in simulation
+  const dynamicImageResult = await generateImage(imageGenPrompt);
 
   if (dynamicImageResult) {
-      // If generation succeeded (in a real scenario):
+      // If generation succeeded:
       // 1. Get features for the generated image
       const features = await generateImageFeatures(dynamicImageResult.alt); // Use alt text (prompt) for description
       generatedImageData = {
@@ -65,40 +72,45 @@ export const loader = async ({ request }: LoaderFunctionArgs): Promise<LoaderDat
           features: features,
           difficulty: difficulty,
       };
-      console.log("Dynamically generated image data (simulated features):", generatedImageData);
+      console.log("Loader: Dynamically generated image data from Gemini:", generatedImageData);
   }
-  // --- End Simulation ---
+  // --- End Real Gemini Image Generation ---
 
-  // Fallback to static image if generation is simulated/failed
+  // Fallback to static image if generation failed
   const image = generatedImageData ?? getImageByDifficulty(difficulty);
 
   if (!image) {
     return {
         error: "Could not load or generate image.",
-        image: null, chatHistory: [], correctFeatures: [], gameFinished: false, gameStarted: false, userInput: null
+        image: null, chatHistory: [], correctFeatures: [], gameFinished: false, gameStarted: false,
+        attemptsRemaining: parseInt(attempts, 10), maxAttempts: parseInt(attempts, 10), winThreshold: parseInt(threshold, 10), userInput: null
     };
   }
 
   // If dynamic generation was skipped but we *wanted* dynamic features, generate them based on static image alt text
   if (!generatedImageData && image) {
-      console.log("Using static image, attempting to generate features dynamically...");
+      console.log("Loader: Using static image, attempting to generate features dynamically...");
       const dynamicFeatures = await generateImageFeatures(image.alt);
       if (dynamicFeatures.length > 0) {
           image.features = dynamicFeatures; // Overwrite static features with dynamic ones
-          console.log("Using dynamically generated features for static image:", dynamicFeatures);
+          console.log("Loader: Using dynamically generated features for static image:", dynamicFeatures);
       }
   }
 
 
   // Return minimal state for server render; client will load full state from localStorage
+  console.log("Loader: Returning loader data:", { image: !!image, gameStarted: false }); // Log before return
   return {
       image,
       chatHistory: [], // Client loads history
       correctFeatures: [], // Client loads progress
       gameFinished: false, // Client loads status
       gameStarted: false, // Client determines if game was in progress
-      userInput: { age, level: difficulty, style, topic }, // Pass user inputs back
-      initialUserInput: { age, level: difficulty, style, topic } // Store initial inputs for client
+      attemptsRemaining: parseInt(attempts, 10), // Initialize attempts
+      maxAttempts: parseInt(attempts, 10),      // Store max attempts
+      winThreshold: parseInt(threshold, 10),     // Store win threshold
+      userInput: { age, level: difficulty, style, topic, attempts, threshold }, // Pass all user inputs back
+      initialUserInput: { age, level: difficulty, style, topic, attempts, threshold } // Store initial inputs for client
   };
 };
 
@@ -146,10 +158,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   if (newlyGuessed) {
       updatedCorrectFeatures.push(newlyGuessed);
-      if (updatedCorrectFeatures.length === imageFeatures.length) {
+      if (updatedCorrectFeatures.length >= imageFeatures.length) { //Win if guessed all
           hint = `Yes, "${newlyGuessed}" is correct! 🎉 You've described all the features! Well done!`;
           gameFinished = true;
-      } else {
+      } else if (updatedCorrectFeatures.length >= gameState.winThreshold) { //Win if guessed enough to reach threshold
+          hint = `Yes, "${newlyGuessed}" is correct! 🎉 You've reached the win threshold by guessing ${gameState.winThreshold} features! Well done!`;
+          gameFinished = true;
+      }
+       else {
            hint = `Great! You found "${newlyGuessed}". Keep going! What else do you see?`;
       }
   } else {
@@ -168,20 +184,29 @@ export default function Index() {
   const fetcher = useFetcher<ActionData>();
   const submit = useSubmit();
   const navigation = useNavigation(); // To check for GET navigation (game start)
+  const isLoading = navigation.state === 'loading' && navigation.location.pathname === '/';
+
 
   // --- State Management ---
   const [isClient, setIsClient] = React.useState(false); // Track if running on client
-  const [gameState, setGameState] = React.useState<GameState>(() => ({
-      // Initialize with server data, client will override if localStorage exists
-      image: initialLoaderData.image,
-      chatHistory: initialLoaderData.chatHistory,
-      correctFeatures: initialLoaderData.correctFeatures,
-      gameFinished: initialLoaderData.gameFinished,
-      gameStarted: initialLoaderData.gameStarted,
-      userInput: initialLoaderData.initialUserInput ?? null, // Use initial inputs from loader
-  }));
+  const [gameState, setGameState] = React.useState<GameState>(() => {
+      const initialState = {
+          // Initialize with server data, client will override if localStorage exists
+          image: initialLoaderData.image,
+          chatHistory: initialLoaderData.chatHistory,
+          correctFeatures: initialLoaderData.correctFeatures,
+          gameFinished: initialLoaderData.gameFinished,
+          gameStarted: initialLoaderData.gameStarted,
+          attemptsRemaining: initialLoaderData.attemptsRemaining ?? 10, // Default attempts if not in loaderData
+          maxAttempts: initialLoaderData.maxAttempts ?? 10,
+          winThreshold: initialLoaderData.winThreshold ?? 4,
+          userInput: initialLoaderData.initialUserInput ?? null, // Use initial inputs from loader
+      };
+      console.log("useState [gameState]: Initial state:", initialState); // Log initial state
+      return initialState;
+  });
 
-  const { image, chatHistory, correctFeatures, gameFinished, gameStarted, userInput } = gameState;
+  const { image, chatHistory, correctFeatures, gameFinished, gameStarted, attemptsRemaining, maxAttempts, winThreshold, userInput } = gameState;
   const [currentInput, setCurrentInput] = React.useState(""); // User's current message input
 
   const chatContainerRef = React.useRef<HTMLDivElement>(null);
@@ -200,24 +225,27 @@ export default function Index() {
            // Only restore if the image ID matches the one potentially loaded by server
            // Or if the server didn't load one (e.g., initial load before form submission)
            if (!initialLoaderData.image || savedState.image.id === initialLoaderData.image?.id) {
-                console.log("Restoring game state from localStorage");
+                console.log("useEffect [localStorage]: Restoring game state from localStorage");
                 setGameState(savedState);
            } else {
-               console.log("Image ID mismatch, clearing stale localStorage state.");
+               console.log("useEffect [localStorage]: Image ID mismatch, clearing stale localStorage state.");
                localStorage.removeItem(STORAGE_KEY_GAME_STATE);
                // Keep initial server loaded image/state
                setGameState(prev => ({
                    ...prev,
                    image: initialLoaderData.image,
                    userInput: initialLoaderData.initialUserInput ?? null,
-                   chatHistory: [], correctFeatures: [], gameFinished: false, gameStarted: false // Reset game progress
+                   chatHistory: [], correctFeatures: [], gameFinished: false, gameStarted: false,
+                   attemptsRemaining: initialLoaderData.attemptsRemaining ?? 10, // Reset to loader defaults
+                   maxAttempts: initialLoaderData.maxAttempts ?? 10,
+                   winThreshold: initialLoaderData.winThreshold ?? 4,
                }));
            }
         } else {
             localStorage.removeItem(STORAGE_KEY_GAME_STATE); // Clear invalid state
         }
       } catch (e) {
-        console.error("Failed to parse saved game state:", e);
+        console.error("useEffect [localStorage]: Failed to parse saved game state:", e);
         localStorage.removeItem(STORAGE_KEY_GAME_STATE);
       }
     } else if (initialLoaderData.image) {
@@ -226,14 +254,18 @@ export default function Index() {
             ...prev,
             image: initialLoaderData.image,
             userInput: initialLoaderData.initialUserInput ?? null,
+            attemptsRemaining: initialLoaderData.attemptsRemaining ?? 10, // Set from loader defaults
+            maxAttempts: initialLoaderData.maxAttempts ?? 10,
+            winThreshold: initialLoaderData.winThreshold ?? 4,
         }));
     }
-  }, [initialLoaderData.image, initialLoaderData.initialUserInput]); // Rerun if loader data changes significantly
+    console.log("useEffect [localStorage]: after setGameState - gameStarted:", gameState.gameStarted, "image:", !!gameState.image);
+  }, [initialLoaderData.image, initialLoaderData.initialUserInput, initialLoaderData.attemptsRemaining, initialLoaderData.winThreshold, initialLoaderData.maxAttempts, gameState.gameStarted, gameState.image]); // Added gameState dependencies for logging
 
   // Save state to localStorage whenever it changes (on client)
   React.useEffect(() => {
     if (isClient && gameStarted) { // Only save if game is active
-      console.log("Saving game state to localStorage");
+      console.log("useEffect [gameState]: Saving game state to localStorage");
       localStorage.setItem(STORAGE_KEY_GAME_STATE, JSON.stringify(gameState));
     }
   }, [gameState, isClient, gameStarted]);
@@ -264,13 +296,19 @@ export default function Index() {
 
   // --- Event Handlers ---
 
-  const handleStartGame = (event: React.FormEvent<HTMLFormElement>) => {
+  const handleStartGame = async (event: React.FormEvent<HTMLFormElement>) => {
       event.preventDefault();
+      console.log("handleStartGame called"); // Debug log
       const formData = new FormData(event.currentTarget);
       const difficulty = formData.get("difficulty") as string;
       const age = formData.get("age") as string;
       const style = formData.get("style") as string;
       const topic = formData.get("topic") as string; // Get topic
+      const attempts = formData.get("attempts") as string; // Get attempts
+      const threshold = formData.get("threshold") as string; // Get threshold
+
+
+      console.log("Form Data:", { difficulty, age, style, topic, attempts, threshold }); // Debug log
 
       // Clear previous game state from storage *before* submitting
       if (isClient) {
@@ -278,19 +316,31 @@ export default function Index() {
       }
 
       // Reset client state immediately for faster UI update
-      setGameState({
-          image: null, // Will be loaded by loader
-          chatHistory: [],
-          correctFeatures: [],
-          gameFinished: false,
-          gameStarted: true, // Set game as started
-          userInput: { age, level: difficulty, style, topic } // Store current inputs
+      setGameState((prevState) => {
+          console.log("handleStartGame: setGameState callback - prevState gameStarted:", prevState.gameStarted, "image:", !!prevState.image);
+          const newState = {
+              image: null, // Will be loaded by loader
+              chatHistory: [],
+              correctFeatures: [],
+              gameFinished: false,
+              gameStarted: true, // Set game as started
+              attemptsRemaining: parseInt(attempts || '10', 10), // Use parsed attempts, default to 10 if empty
+              maxAttempts: parseInt(attempts || '10', 10),
+              winThreshold: parseInt(threshold || '4', 10),     // Use parsed threshold, default to 4 if empty
+              userInput: { age, level: difficulty, style, topic, attempts, threshold } // Store current inputs
+          };
+          console.log("handleStartGame: setGameState callback - newState:", newState); // Log new state
+          return newState;
       });
       setCurrentInput(""); // Clear chat input
+
+      // Log state after startGame handler
+      console.log("handleStartGame: State after setGameState:", { gameStarted: gameState.gameStarted, image: !!gameState.image });
 
       // Use submit to trigger loader with new parameters
       submit(formData, { method: 'get', action: '/' });
   };
+
 
   const handleSendMessage = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -322,7 +372,8 @@ export default function Index() {
       }
       // Reset state and go back to setup screen
       setGameState({
-          image: null, chatHistory: [], correctFeatures: [], gameFinished: false, gameStarted: false, userInput: null
+          image: null, chatHistory: [], correctFeatures: [], gameFinished: false, gameStarted: false,
+          attemptsRemaining: maxAttempts, maxAttempts: maxAttempts, winThreshold: winThreshold, userInput: null //reset attempts and threshold to max values
       });
       setCurrentInput("");
       // Optional: redirect to clear query params, though just resetting state might be enough
@@ -331,7 +382,9 @@ export default function Index() {
 
   // --- Render Logic ---
 
-  const isLoading = navigation.state === 'loading' && navigation.location.pathname === '/';
+  // Log state before rendering
+  console.log("Render: State before conditional render:", { isLoading, gameStarted, image: !!image, initialLoaderDataImage: !!initialLoaderData.image });
+
 
   if (initialLoaderData.error && !image) {
     return <div className="p-6 text-red-600 bg-red-100 rounded max-w-md mx-auto">Error loading game data: {initialLoaderData.error}</div>;
@@ -404,6 +457,30 @@ export default function Index() {
                               />
                           </div>
                       </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                          <div>
+                              <label htmlFor="attempts" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Attempts:</label>
+                              <input
+                                  type="number"
+                                  id="attempts"
+                                  name="attempts"
+                                  defaultValue={userInput?.attempts ?? "10"}
+                                  min="1"
+                                  className="w-full p-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 focus:ring-blue-500 focus:border-blue-500"
+                              />
+                          </div>
+                          <div>
+                              <label htmlFor="threshold" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Win Threshold:</label>
+                              <input
+                                  type="number"
+                                  id="threshold"
+                                  name="threshold"
+                                  defaultValue={userInput?.threshold ?? "4"}
+                                  min="1"
+                                  className="w-full p-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 focus:ring-blue-500 focus:border-blue-500"
+                              />
+                          </div>
+                      </div>
                       <button
                           type="submit"
                           className="w-full bg-blue-600 text-white p-3 rounded-lg font-semibold hover:bg-blue-700 transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 dark:focus:ring-offset-gray-800"
@@ -419,11 +496,23 @@ export default function Index() {
                   <div className="w-full lg:w-1/2 xl:w-2/5 flex flex-col bg-white dark:bg-gray-800 p-4 rounded-lg shadow overflow-hidden">
                       <h2 className="text-lg font-semibold mb-3 text-center flex-shrink-0">Describe this Image:</h2>
                       <div className="flex-grow flex justify-center items-center min-h-[200px] mb-3 overflow-hidden">
-                          <img src={image.url} alt={image.alt} className="max-w-full max-h-full object-contain rounded" />
+                          {isLoading ? (
+                              <div className="flex justify-center items-center">
+                                  <div className="typing-indicator">
+                                      <span className="typing-dot"></span>
+                                      <span className="typing-dot"></span>
+                                      <span className="typing-dot"></span>
+                                  </div>
+                              </div>
+                          ) : (
+                              <img src={image.url} alt={image.alt} className="max-w-full max-h-full object-contain rounded" />
+                          )}
                       </div>
                       <div className="text-xs sm:text-sm text-gray-600 dark:text-gray-400 w-full flex-shrink-0 border-t dark:border-gray-700 pt-3 mt-auto space-y-1">
                           <p><b>Difficulty:</b> {image.difficulty}</p>
                           <p><b>Topic:</b> {userInput?.topic || 'N/A'}</p>
+                          <p><b>Attempts Remaining:</b> {attemptsRemaining} / {maxAttempts}</p> {/* Display attempts */}
+                          <p><b>Win Threshold:</b> {winThreshold} Features</p> {/* Display win threshold */}
                           <p><b>Features Found ({correctFeatures.length}/{image.features.length}):</b></p>
                           <ul className="list-disc pl-5 text-xs">
                               {image.features.map(feature => (
@@ -448,14 +537,14 @@ export default function Index() {
                       <div ref={chatContainerRef} className="flex-1 overflow-y-auto mb-4 p-3 space-y-3 bg-gray-50 dark:bg-gray-700 rounded-md border border-gray-200 dark:border-gray-600">
                           {chatHistory.map((msg, index) => (
                               <div key={index} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                                  <div className={`p-2.5 rounded-lg max-w-[85%] w-fit text-sm shadow-sm ${msg.role === 'user' ? 'bg-blue-500 text-white' : 'bg-gray-200 dark:bg-gray-600 text-gray-900 dark:text-gray-100'}`}>
-                                      <p style={{ whiteSpace: 'pre-wrap', wordWrap: 'break-word' }}>{msg.text}</p>
+                                  <div className={`p-2.5 rounded-lg max-w-[85%] w-fit text-sm shadow-sm ${msg.role === 'user' ? 'chat-message-user' : 'chat-message-gemini'}`}>
+                                      <p className="chat-text" >{msg.text}</p>
                                   </div>
                               </div>
                           ))}
                           {fetcher.state === 'submitting' && (
                               <div className="flex justify-start">
-                                  <div className="p-2.5 rounded-lg bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-400 text-sm italic w-fit shadow-sm animate-pulse">Gemini is thinking...</div>
+                                  <div className="p-2.5 rounded-lg chat-message-gemini text-gray-600 dark:text-gray-400 text-sm italic w-fit shadow-sm">Gemini is thinking...</div>
                               </div>
                           )}
                           {gameFinished && (
@@ -484,7 +573,7 @@ export default function Index() {
                                   aria-label="Send message"
                               >
                                   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5">
-                                      <path d="M3.105 3.105a1.5 1.5 0 012.122-.001L19.43 14.29a1.5 1.5 0 01-1.13 2.576H1.5a1.5 1.5 0 01-1.49-1.813L3.105 3.105zM4.879 6.121L1.5 15.43h14.805L4.879 6.12z" />
+                                      <path d="M3.105 3.105a1.5 1.5 0 012.122-.001L19.43 14.29a1.5 1.5 0 01-1.13 2.576H1.5a1.5 0 01-1.49-1.813L3.105 3.105zM4.879 6.121L1.5 15.43h14.805L4.879 6.12z" />
                                   </svg>
                               </button>
                           </div>

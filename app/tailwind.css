@@ -10,3 +10,53 @@ body {
     color-scheme: dark;
   }
 }
+
+.chat-message-user {
+  @apply bg-user-blue text-white rounded-br-none rounded-tr-lg;
+}
+
+.chat-message-gemini {
+  @apply bg-chatgpt-gray dark:bg-gray-800 text-chatgpt-text dark:text-gray-100 rounded-tl-none rounded-bl-lg;
+}
+
+.chat-text {
+    @apply whitespace-pre-wrap break-words;
+}
+
+/* Typing animation styles - for loading indicator */
+.typing-indicator {
+    width: 40px;
+    display: flex;
+    justify-content: space-between;
+}
+
+.typing-dot {
+    width: 8px;
+    height: 8px;
+    background-color: theme('colors.gray.500');
+    border-radius: 50%;
+    animation: pulse 1.5s infinite ease-in-out;
+}
+
+.typing-dot:nth-child(2) {
+    animation-delay: 0.2s;
+}
+
+.typing-dot:nth-child(3) {
+    animation-delay: 0.4s;
+}
+
+@keyframes pulse {
+    0% {
+        opacity: 0.4;
+        transform: scale(0.7);
+    }
+    50% {
+        opacity: 1;
+        transform: scale(1);
+    }
+    100% {
+        opacity: 0.4;
+        transform: scale(0.7);
+    }
+}

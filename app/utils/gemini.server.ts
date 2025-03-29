@@ -16,11 +16,11 @@ if (!apiKey) {
 const genAI = new GoogleGenerativeAI(apiKey);
 
 const textModel = genAI.getGenerativeModel({
-  model: "gemini-1.5-flash", // Model for text generation (hints, descriptions)
+  model: "gemini-2.0-flash", // Model for text generation (hints, descriptions)
 });
 
-// Placeholder for potential future image generation model
-// const imageModel = genAI.getGenerativeModel({ model: "gemini-pro-vision" }); // Example, adjust if needed
+// Use Gemini Pro Vision for image generation
+const imageModel = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp-image-generation" }); // Updated model name
 
 const generationConfig = {
   temperature: 0.8, // Slightly lower temp for more focused hints/descriptions
@@ -118,32 +118,58 @@ export async function generateImageFeatures(imageDescription: string): Promise<s
 }
 
 
-// Placeholder for actual Image Generation function
+// Actual Image Generation function using Gemini Pro Vision
 export async function generateImage(prompt: string): Promise<{ url: string; alt: string } | null> {
-  console.log(`--- SIMULATING IMAGE GENERATION ---`);
+  console.log(`--- GENERATING IMAGE FROM GEMINI ---`);
   console.log(`Prompt: ${prompt}`);
-  console.log(`Note: Actual image generation requires a specific API call (e.g., Imagen via Vertex AI or a Gemini image model).`);
-  // ** ACTUAL IMPLEMENTATION NEEDED HERE **
-  // This would involve:
-  // 1. Choosing an image generation model/API (e.g., Imagen 2 on Vertex AI).
-  // 2. Making an API call with the prompt.
-  // 3. Handling the response, which should contain the image URL(s).
-  // 4. Returning the URL and potentially using the prompt as alt text.
 
-  // For now, return null to indicate simulation
-  return null;
-
-  /* Example using a hypothetical SDK function (replace with actual implementation)
   try {
-    // const imageResponse = await imageModel.generateContent([prompt, { // Assuming multimodal input
-    //   inlineData: { mimeType: "image/png", data: "..." } // Or just text prompt
-    // }]);
-    // const imageUrl = imageResponse.response.candidates[0].content.parts[0].uri; // Adjust based on actual API response structure
-    // return { url: imageUrl, alt: prompt };
-     return null; // Replace with actual call
-  } catch (error) {
-    console.error("Error generating image:", error);
+    const request = {
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      generationConfig: {
+        ...generationConfig,
+        maxOutputTokens: 2048, // Increased for image generation context
+        responseModalities: ['TEXT', 'IMAGE'] // Ensure image modality is requested
+      },
+      safetySettings,
+    };
+
+    const result = await imageModel.generateContent(request);
+    const response = result.response;
+
+    if (!response || !response.candidates || response.candidates.length === 0) {
+      console.error("No candidates returned from Gemini Image Generation API.");
+      return null;
+    }
+
+    const candidate = response.candidates[0];
+    if (!candidate.content || !candidate.content.parts || candidate.content.parts.length === 0) {
+      console.error("No content parts in the candidate from Gemini Image Generation API.");
+      return null;
+    }
+
+
+    // Assuming the first candidate and part is the image
+    const imagePart = candidate.content.parts[0];
+
+
+    if (!imagePart || !('inlineData' in imagePart) || !imagePart.inlineData?.data) {
+      console.error("No inline image data returned from Gemini Image Generation API.");
+      console.log("Response Parts:", candidate.content.parts); // Log parts for debugging
+      return null;
+    }
+
+    const base64Image = imagePart.inlineData.data;
+    const mimeType = imagePart.inlineData.mimeType || 'image/png'; // Default to png if not specified
+    const imageUrl = `data:${mimeType};base64,${base64Image}`;
+
+    return { url: imageUrl, alt: prompt }; // Use data URL and prompt as alt text
+
+  } catch (error: any) { // Explicitly type error as any for accessing message
+    console.error("Error generating image with Gemini:", error);
+    if (error instanceof Error) {
+      console.error("Error details:", error.message); // Log error message for more details
+    }
     return null;
   }
-  */
 }

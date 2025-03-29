@@ -17,15 +17,33 @@ export default {
           '"Noto Color Emoji"',
         ],
       },
-      // Add custom animations or colors if needed for ChatGPT look
+      // Add custom animations or colors for ChatGPT look
+      colors: {
+        'chatgpt-gray': '#f0f0f0', // Light gray background for ChatGPT messages
+        'chatgpt-text': '#343541', // Dark text color for ChatGPT messages
+        'user-blue': '#007bff',     // Example blue for user messages
+      },
       keyframes: {
-         pulse: {
-           '0%, 100%': { opacity: '1' },
-           '50%': { opacity: '.5' },
-         }
+        typing: {
+          "0%": {
+            width: "0%",
+            visibility: "hidden"
+          },
+          "100%": {
+            width: "100%"
+          }
+        },
+        blink: {
+          "50%": {
+            borderColor: "transparent"
+          },
+          "100%": {
+            borderColor: "white"
+          }
+        }
       },
       animation: {
-         pulse: 'pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+        typing: "typing 2s steps(20) infinite alternate, blink .7s infinite"
       }
     },
   },
