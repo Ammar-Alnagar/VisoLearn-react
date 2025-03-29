@@ -336,28 +336,34 @@ export default function Index() {
     });
 
     // --- Logic Branch 1: Loader potentially indicates a new game ---
-        if (isPotentialNewGameFromLoader && !fetcher.data && !fetcher.formData) {
-            // Only process loader data if this is not a chat submission
-            if (!gameState.gameStarted || !gameState.image) {
-            console.log("useEffect [initialLoaderData]: Starting new game with loader data");
-            setGameState({
-                image: initialLoaderData.image,
-                chatHistory: [],
-                correctFeatures: [],
-                gameFinished: false,
-                gameStarted: true,
-                attemptsRemaining: initialLoaderData.attemptsRemaining,
-                maxAttempts: initialLoaderData.maxAttempts,
-                winThreshold: initialLoaderData.winThreshold,
-                userInput: initialLoaderData.userInput,
-            });
-            if (isClient) {
-                console.log("useEffect [initialLoaderData]: Clearing localStorage for new game.");
-                localStorage.removeItem(STORAGE_KEY_GAME_STATE);
-            }
-        } else {
-            console.log("useEffect [initialLoaderData]: Ignoring loader update during chat");
+    if (isPotentialNewGameFromLoader && !fetcher.data && !fetcher.formData) {
+      // Only process loader data if this is not a chat submission
+      if (!gameState.gameStarted || !gameState.image) {
+        console.log(
+          "useEffect [initialLoaderData]: Starting new game with loader data"
+        );
+        setGameState({
+          image: initialLoaderData.image,
+          chatHistory: [],
+          correctFeatures: [],
+          gameFinished: false,
+          gameStarted: true,
+          attemptsRemaining: initialLoaderData.attemptsRemaining,
+          maxAttempts: initialLoaderData.maxAttempts,
+          winThreshold: initialLoaderData.winThreshold,
+          userInput: initialLoaderData.userInput,
+        });
+        if (isClient) {
+          console.log(
+            "useEffect [initialLoaderData]: Clearing localStorage for new game."
+          );
+          localStorage.removeItem(STORAGE_KEY_GAME_STATE);
         }
+      } else {
+        console.log(
+          "useEffect [initialLoaderData]: Ignoring loader update during chat"
+        );
+      }
     }
     // --- Logic Branch 2: Loader indicates NO game started, but component state thinks one IS active ---
     // This happens after clicking "New Game / Change Settings" which navigates to '/' without params.
@@ -509,7 +515,10 @@ export default function Index() {
   React.useEffect(() => {
     // Only process if fetcher has new data
     if (fetcher.data) {
-      console.log("useEffect [fetcher.data]: Processing fetcher response:", fetcher.data);
+      console.log(
+        "useEffect [fetcher.data]: Processing fetcher response:",
+        fetcher.data
+      );
       // Destructure data returned by api.chat.ts's action
       const {
         message,
@@ -523,7 +532,8 @@ export default function Index() {
       setGameState((prev) => {
         const newHistory = [...prev.chatHistory];
         // Add message/hint/error from the API route's response to chat history
-        if (message) newHistory.push({ role: 'model', text: "Gemini: " + message });
+        if (message)
+          newHistory.push({ role: "model", text: "Gemini: " + message });
         else if (hint) newHistory.push({ role: "model", text: hint });
         else if (error)
           newHistory.push({ role: "model", text: `Error: ${error}` }); // Display API errors
@@ -656,7 +666,7 @@ export default function Index() {
 
       <header className="p-4 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
         <h1 className="text-xl sm:text-2xl font-semibold text-center">
-          Gemini Image Describer
+          VisoLearn
         </h1>
       </header>
 
