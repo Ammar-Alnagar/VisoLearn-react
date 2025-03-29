@@ -46,41 +46,57 @@ interface GameState {
 }
 
 interface LoaderData {
-  image: ImageData | null;
-  chatHistory: { role: "user" | "model"; text: string }[]; // Although unused by loader now, keep for type consistency?
-  correctFeatures: string[]; // Although unused by loader now, keep for type consistency?
-  gameFinished: boolean;
-  gameStarted: boolean;
-  attemptsRemaining: number;
-  maxAttempts: number;
-  winThreshold: number;
-  userInput: GameState["userInput"] | null;
+  // Data returned when starting a NEW game
+  newGameData?: {
+    image: ImageData;
+    maxAttempts: number;
+    winThreshold: number;
+    userInput: GameState["userInput"];
+  };
+  // Data returned for an existing/initial state
+  initialStateData?: {
+    maxAttempts: number;
+    winThreshold: number;
+  };
+  // Flag indicating if the loader thinks a game is active based on URL params
+  // This helps the client decide whether to load from localStorage or start fresh
+  loaderIndicatesActiveGame: boolean;
   error?: string;
 }
 
-// --- Loader (Logic remains the same, generates image based on params) ---
+// --- Loader ---
 export const loader = async ({
   request,
 }: LoaderFunctionArgs): Promise<LoaderData> => {
+  // --- ADDED LOG ---
+  console.log(`\n--- LOADER EXECUTING (${new Date().toISOString()}) ---`);
   const url = new URL(request.url);
-  const difficulty = url.searchParams.get("difficulty") as
-    | ImageData["difficulty"]
-    | null;
-  const age = url.searchParams.get("age") || "";
-  const style = url.searchParams.get("style") || "any";
-  const topic = url.searchParams.get("topic") || "";
+  console.log(`Loader: Processing request for URL: ${url.pathname}${url.search}`);
+
+  // --- Get common parameters ---
   const attemptsStr = url.searchParams.get("attempts") || "10";
   const thresholdStr = url.searchParams.get("threshold") || "4";
-
   let attempts = parseInt(attemptsStr, 10);
   if (isNaN(attempts) || attempts < 1) attempts = 10;
   let threshold = parseInt(thresholdStr, 10);
   if (isNaN(threshold) || threshold < 1) threshold = 4;
 
-  if (difficulty && topic) {
-    console.log(
-      "Loader: GET request with difficulty/topic params. Attempting to load/generate image..."
-    );
+  // --- Check for parameters indicating a NEW game request ---
+  const difficulty = url.searchParams.get("difficulty") as ImageData["difficulty"] | null;
+  const topic = url.searchParams.get("topic");
+  const age = url.searchParams.get("age") || "";
+  const style = url.searchParams.get("style") || "any";
+  const imageId = url.searchParams.get("imageId"); // Check if an imageId exists
+
+  // --- Determine if loader thinks a game is active ---
+  // A game is considered active by the loader if an imageId is present in the URL.
+  // This helps differentiate refreshes/revalidations from new game starts.
+  const loaderIndicatesActiveGame = !!imageId;
+  console.log(`Loader: Active game indicated by URL? ${loaderIndicatesActiveGame} (imageId: ${imageId})`);
+
+  // --- Scenario 1: Request is for a NEW game (difficulty & topic provided, NO imageId) ---
+  if (difficulty && topic && !imageId) {
+    console.log("Loader: New game request detected. Generating image...");
     const imageGenPrompt = `Generate an image suitable for a ${difficulty} description game. The user's age is ${
       age || "unspecified"
     }. The desired style is ${style}. The image should focus on the topic: ${topic}.`;
@@ -90,188 +106,120 @@ export const loader = async ({
     try {
       const dynamicImageResult = await generateImage(imageGenPrompt);
       if (dynamicImageResult) {
-        // Generate a unique ID for the new image session
-        const imageId = Date.now();
+        const newImageId = `gen-${Date.now()}`; // Generate a unique ID for the new game session
         const features = await generateImageFeatures(dynamicImageResult.alt);
         generatedImageData = {
-          id: imageId, // Use timestamp as ID
+          id: newImageId,
           url: dynamicImageResult.url,
           alt: dynamicImageResult.alt,
-          features:
-            features.length > 0 ? features : ["object", "color", "background"], // Fallback features
+          features: features.length > 0 ? features : ["object", "color", "background"],
           difficulty: difficulty,
         };
-        console.log(
-          "Loader: Dynamically generated image data from Gemini:",
-          generatedImageData
-        );
+        console.log("Loader: Dynamically generated image data:", generatedImageData);
       } else {
         console.warn("Loader: Gemini image generation returned null.");
-        // Optionally fall back to static image here if needed
+        errorMsg = "Failed to generate image from Gemini. Using fallback.";
       }
     } catch (error) {
       console.error("Loader: Error during image/feature generation:", error);
-      errorMsg =
-        "Failed to generate image or features. Please try different settings.";
-      // Optionally fall back to static image here if needed
+      errorMsg = "Error generating image or features. Using fallback.";
     }
 
     // Use generated image if available, otherwise try static fallback
     const image = generatedImageData ?? getImageByDifficulty(difficulty);
 
     if (!image) {
-      console.error(
-        "Loader: No image could be generated or fetched as fallback."
-      );
+      console.error("Loader: No image could be generated or fetched as fallback.");
       return {
-        error:
-          errorMsg ??
-          "Could not load or generate image for the specified difficulty.",
-        image: null,
-        chatHistory: [],
-        correctFeatures: [],
-        gameFinished: false,
-        gameStarted: false,
-        attemptsRemaining: attempts,
-        maxAttempts: attempts,
-        winThreshold: threshold,
-        userInput: null,
+        error: errorMsg ?? "Could not load or generate image for the specified difficulty.",
+        loaderIndicatesActiveGame: false, // Failed to start
+        initialStateData: { maxAttempts: attempts, winThreshold: threshold },
       };
     }
 
-    // Ensure static images also get features if needed (and potentially an ID if missing)
-    if (
-      !generatedImageData &&
-      image &&
-      (!image.features || image.features.length === 0)
-    ) {
-      console.log(
-        "Loader: Using static image, attempting to generate features dynamically..."
-      );
+    // Ensure static images also get features if needed
+    if (!generatedImageData && image && (!image.features || image.features.length === 0)) {
+      console.log("Loader: Using static image, generating features...");
       try {
         const dynamicFeatures = await generateImageFeatures(image.alt);
-        if (dynamicFeatures.length > 0) {
-          image.features = dynamicFeatures;
-          console.log(
-            "Loader: Using dynamically generated features for static image:",
-            dynamicFeatures
-          );
-        } else {
-          image.features = ["item", "setting", "detail"]; // Default fallback
-          console.log(
-            "Loader: Feature generation for static image failed, using default fallback features."
-          );
-        }
+        image.features = dynamicFeatures.length > 0 ? dynamicFeatures : ["item", "setting", "detail"];
       } catch (featureError) {
-        console.error(
-          "Loader: Error generating features for static image:",
-          featureError
-        );
-        image.features = ["item", "setting", "detail"]; // Default fallback
-        errorMsg =
-          (errorMsg ? errorMsg + " " : "") +
-          "Could not generate descriptive features.";
+        console.error("Loader: Error generating features for static image:", featureError);
+        image.features = ["item", "setting", "detail"];
+        errorMsg = (errorMsg ? errorMsg + " " : "") + "Could not generate descriptive features.";
       }
     }
 
     // Assign a unique ID if the image doesn't have one (especially static ones)
     if (!image.id) {
-      // Use a combination of difficulty and timestamp for potentially more stable IDs during reloads if needed,
-      // but Date.now() ensures uniqueness for dynamic generation. For static, maybe use its original ID or index?
-      // For simplicity now, let's ensure *some* ID exists if dynamic generation failed but static was found.
-      image.id = generatedImageData
-        ? generatedImageData.id
-        : `static-${difficulty}-${Date.now()}`;
+      image.id = `static-${difficulty}-${Date.now()}`;
     }
 
-    console.log("Loader: Returning loader data for active game:", {
-      imageId: image.id,
-      gameStarted: true,
-    });
-    // Return game state based on successful image load/generation
+    console.log("Loader: Returning NEW game data.");
     return {
-      image,
-      chatHistory: [], // Initial chat history is empty
-      correctFeatures: [], // Initial correct features is empty
-      gameFinished: false,
-      gameStarted: true, // Signal that the game setup is complete
-      attemptsRemaining: attempts,
-      maxAttempts: attempts,
-      winThreshold: threshold,
-      userInput: {
-        age,
-        level: difficulty,
-        style,
-        topic,
-        attempts: String(attempts),
-        threshold: String(threshold),
+      newGameData: {
+        image,
+        maxAttempts: attempts,
+        winThreshold: threshold,
+        userInput: { age, level: difficulty, style, topic, attempts: String(attempts), threshold: String(threshold) },
       },
-      error: errorMsg, // Include potential errors
-    };
-  } else {
-    // Initial load without parameters, return setup state
-    console.log(
-      "Loader: Initial load or revalidation without params, returning empty state."
-    );
-    return {
-      image: null,
-      chatHistory: [],
-      correctFeatures: [],
-      gameFinished: false,
-      gameStarted: false, // Signal that the game needs setup
-      attemptsRemaining: attempts, // Default attempts
-      maxAttempts: attempts,
-      winThreshold: threshold, // Default threshold
-      userInput: null,
+      loaderIndicatesActiveGame: true, // Game is now active
+      error: errorMsg,
     };
   }
+
+  // --- Scenario 2: Request is NOT for a new game (no difficulty/topic, or imageId exists) ---
+  // This covers initial load, refreshes of active games, or navigation back to setup.
+  console.log("Loader: Not a new game request. Returning initial/existing state data.");
+  return {
+    loaderIndicatesActiveGame: loaderIndicatesActiveGame, // Reflects if URL had imageId
+    initialStateData: {
+      maxAttempts: attempts,
+      winThreshold: threshold,
+    },
+    // No error message here unless a specific error occurred during this simpler load path
+  };
 };
 
-// --- ActionData Interface (for fetcher response) ---
+
+// --- ActionData Interface (for fetcher response from /api/chat) ---
 interface ActionData {
-  hint?: string;
+  message?: string; // Combined hint/response message
   error?: string;
   gameFinished?: boolean;
   correctFeatures?: string[];
   attemptsRemaining?: number;
-  isGameOver?: boolean;
-  message?: string; // For simplified action response
+  isGameOver?: boolean; // Derived from attemptsRemaining <= 0
 }
 
 // --- Component ---
 export default function Index() {
-  const initialLoaderData = useLoaderData<LoaderData>();
+  const loaderData = useLoaderData<LoaderData>();
   const fetcher = useFetcher<ActionData>(); // Fetcher for chat API calls
   const submit = useSubmit();
   const navigation = useNavigation();
   const isSubmittingStartForm =
     navigation.state === "submitting" &&
-    navigation.formMethod?.toLowerCase() === "get";
+    navigation.formMethod?.toLowerCase() === "get" &&
+    navigation.formData?.has("topic"); // More specific check for start form
   const isSubmittingChat = fetcher.state !== "idle";
 
   // --- State Management ---
   const [isClient, setIsClient] = React.useState(false);
   const [gameState, setGameState] = React.useState<GameState>(() => {
-    // Initialize state based on loader data ONLY if the loader indicates a game has started
+    // Initial state is always the setup screen state until hydration/effects run
     const initialState: GameState = {
-      image: initialLoaderData.gameStarted ? initialLoaderData.image : null,
-      chatHistory: initialLoaderData.gameStarted ? [] : [], // Start fresh chat history
-      correctFeatures: initialLoaderData.gameStarted ? [] : [], // Start fresh correct features
-      gameFinished: initialLoaderData.gameStarted
-        ? initialLoaderData.gameFinished
-        : false,
-      gameStarted: initialLoaderData.gameStarted,
-      attemptsRemaining: initialLoaderData.attemptsRemaining,
-      maxAttempts: initialLoaderData.maxAttempts,
-      winThreshold: initialLoaderData.winThreshold,
-      userInput: initialLoaderData.gameStarted
-        ? initialLoaderData.userInput
-        : null,
+      image: null,
+      chatHistory: [],
+      correctFeatures: [],
+      gameFinished: false,
+      gameStarted: false,
+      attemptsRemaining: loaderData.initialStateData?.maxAttempts ?? 10,
+      maxAttempts: loaderData.initialStateData?.maxAttempts ?? 10,
+      winThreshold: loaderData.initialStateData?.winThreshold ?? 4,
+      userInput: null,
     };
-    console.log(
-      "useState [gameState]: Initial state derived from loader:",
-      initialState
-    );
+    console.log("useState [gameState]: Initializing component state:", initialState);
     return initialState;
   });
 
@@ -289,240 +237,201 @@ export default function Index() {
   const [currentInput, setCurrentInput] = React.useState("");
   const chatContainerRef = React.useRef<HTMLDivElement>(null);
 
-  // Ref to track previous fetcher state to detect completion
-  const prevFetcherStateRef = React.useRef(fetcher.state);
-  React.useEffect(() => {
-    // Update the ref *after* the render cycle where fetcher.state might have changed
-    prevFetcherStateRef.current = fetcher.state;
-  });
-
   // --- Effects ---
 
-  // Effect 1: Sync with Loader Data (MODIFIED TO PREVENT IMAGE CHANGE ON CHAT)
-  React.useEffect(() => {
-    console.log(
-      "useEffect [initialLoaderData]: Loader data changed. Analyzing...",
-      {
-        loaderData: initialLoaderData,
-        currentGameState: {
-          gameStarted: gameState.gameStarted,
-          imageId: gameState.image?.id,
-        },
-        currentFetcherState: fetcher.state,
-        prevFetcherState: prevFetcherStateRef.current,
-      }
-    );
-
-    // Condition 1: Loader indicates a game should start/is active
-    const loaderIndicatesGame = initialLoaderData.gameStarted;
-    // Condition 2: Loader provides a different image than current state (or state has no image)
-    const isDifferentImage =
-      !gameState.image || initialLoaderData.image?.id !== gameState.image?.id;
-    // Condition 3: The loader data represents a potential new game start
-    const isPotentialNewGameFromLoader =
-      loaderIndicatesGame && isDifferentImage;
-
-    // Condition 4: Check if the fetcher state transitioned from submitting/loading to idle in this cycle
-    const fetcherJustCompleted =
-      (prevFetcherStateRef.current === "submitting" ||
-        prevFetcherStateRef.current === "loading") &&
-      fetcher.state === "idle";
-
-    console.log("useEffect [initialLoaderData]: Calculated flags:", {
-      loaderIndicatesGame,
-      isDifferentImage,
-      isPotentialNewGameFromLoader,
-      fetcherJustCompleted,
-    });
-
-    // --- Logic Branch 1: Loader potentially indicates a new game ---
-    if (isPotentialNewGameFromLoader && !fetcher.data && !fetcher.formData) {
-      // Only process loader data if this is not a chat submission
-      if (!gameState.gameStarted || !gameState.image) {
-        console.log(
-          "useEffect [initialLoaderData]: Starting new game with loader data"
-        );
-        setGameState({
-          image: initialLoaderData.image,
-          chatHistory: [],
-          correctFeatures: [],
-          gameFinished: false,
-          gameStarted: true,
-          attemptsRemaining: initialLoaderData.attemptsRemaining,
-          maxAttempts: initialLoaderData.maxAttempts,
-          winThreshold: initialLoaderData.winThreshold,
-          userInput: initialLoaderData.userInput,
-        });
-        if (isClient) {
-          console.log(
-            "useEffect [initialLoaderData]: Clearing localStorage for new game."
-          );
-          localStorage.removeItem(STORAGE_KEY_GAME_STATE);
-        }
-      } else {
-        console.log(
-          "useEffect [initialLoaderData]: Ignoring loader update during chat"
-        );
-      }
-    }
-    // --- Logic Branch 2: Loader indicates NO game started, but component state thinks one IS active ---
-    // This happens after clicking "New Game / Change Settings" which navigates to '/' without params.
-    else if (!loaderIndicatesGame && gameState.gameStarted) {
-      console.log(
-        "useEffect [initialLoaderData]: Loader returned non-started state (e.g., after reset). Resetting component state to setup screen."
-      );
-      setGameState((prev) => ({
-        ...prev,
-        image: null,
-        chatHistory: [],
-        correctFeatures: [],
-        gameFinished: false,
-        gameStarted: false, // Go back to setup
-        userInput: null,
-        // Update attempts/threshold to defaults from loader in case they were changed
-        attemptsRemaining: initialLoaderData.attemptsRemaining,
-        maxAttempts: initialLoaderData.maxAttempts,
-        winThreshold: initialLoaderData.winThreshold,
-      }));
-      if (isClient) {
-        console.log(
-          "useEffect [initialLoaderData]: Clearing localStorage due to reset."
-        );
-        localStorage.removeItem(STORAGE_KEY_GAME_STATE);
-      }
-    }
-    // --- Logic Branch 3: Loader indicates game started, component state agrees, AND image ID is the SAME ---
-    // This might happen on refresh or if loader re-runs without changing the image ID.
-    // Update non-critical settings just in case.
-    else if (
-      loaderIndicatesGame &&
-      gameState.gameStarted &&
-      !isDifferentImage
-    ) {
-      console.log(
-        "useEffect [initialLoaderData]: Loader re-ran, same image ID. Updating non-critical settings."
-      );
-      setGameState((prev) => ({
-        ...prev,
-        attemptsRemaining: initialLoaderData.attemptsRemaining,
-        maxAttempts: initialLoaderData.maxAttempts,
-        winThreshold: initialLoaderData.winThreshold,
-        userInput: initialLoaderData.userInput,
-      }));
-    }
-    // --- Logic Branch 4: Fallback ---
-    else {
-      console.log(
-        "useEffect [initialLoaderData]: No relevant state change detected or handled by other conditions (e.g., initial load to setup screen)."
-      );
-      // Ensure defaults are set if loading setup screen initially
-      if (!gameState.gameStarted && !loaderIndicatesGame) {
-        setGameState((prev) => ({
-          ...prev,
-          attemptsRemaining: initialLoaderData.attemptsRemaining,
-          maxAttempts: initialLoaderData.maxAttempts,
-          winThreshold: initialLoaderData.winThreshold,
-        }));
-      }
-    }
-
-    // Dependencies: initialLoaderData drives the effect. isClient ensures localStorage access is safe.
-    // gameState.gameStarted and gameState.image?.id are needed for the comparison logic.
-    // fetcher.state is needed to detect the transition upon completion.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    initialLoaderData,
-    isClient,
-    gameState.gameStarted,
-    gameState.image?.id,
-    fetcher.state,
-  ]);
-
-  // Effect 2: Load state from localStorage (Runs only on initial mount if no game started by loader)
+  // Effect 1: Hydration and Local Storage Loading (Client-side only)
   React.useEffect(() => {
     setIsClient(true);
-    // Only try to load from localStorage if the loader didn't already start a game
-    if (!initialLoaderData.gameStarted && !gameState.gameStarted) {
+    console.log("useEffect [isClient]: Component hydrated.");
+
+    // Try loading from localStorage ONLY if the loader didn't just provide new game data
+    // AND the loader doesn't indicate an active game via URL (prevent localStorage override on refresh)
+    if (!loaderData.newGameData && !loaderData.loaderIndicatesActiveGame) {
       const savedStateRaw = localStorage.getItem(STORAGE_KEY_GAME_STATE);
       if (savedStateRaw) {
         try {
           const savedState = JSON.parse(savedStateRaw) as GameState;
-          // Basic validation: ensure essential parts exist and game wasn't finished
+          // Validate saved state
           if (
             savedState.image &&
             savedState.chatHistory &&
             savedState.correctFeatures &&
             savedState.gameStarted &&
-            !savedState.gameFinished
+            !savedState.gameFinished && // Only restore active games
+            savedState.attemptsRemaining > 0 // Only restore if attempts remain
           ) {
-            console.log(
-              "useEffect [localStorage]: Restoring active game state from localStorage"
-            );
-            // Check again if game state hasn't been started by loader in the meantime
-            if (!gameState.gameStarted) {
-              setGameState(savedState);
-            } else {
-              console.log(
-                "useEffect [localStorage]: Game was started by loader concurrently, ignoring localStorage."
-              );
-              localStorage.removeItem(STORAGE_KEY_GAME_STATE); // Clean up potentially stale state
+            console.log("useEffect [isClient]: Restoring active game state from localStorage.");
+            setGameState(savedState);
+            // Update URL to reflect the restored game's imageId and settings
+            const searchParams = new URLSearchParams(window.location.search);
+            searchParams.set("imageId", String(savedState.image.id));
+            searchParams.set("attempts", String(savedState.maxAttempts));
+            searchParams.set("threshold", String(savedState.winThreshold));
+            if (savedState.userInput) {
+              searchParams.set("topic", savedState.userInput.topic);
+              searchParams.set("difficulty", savedState.userInput.level);
+              // Add others if needed (age, style)
             }
+            window.history.replaceState(null, "", `?${searchParams.toString()}`);
           } else {
-            console.log(
-              "useEffect [localStorage]: Invalid, finished, or non-started game state in localStorage, clearing."
-            );
+            console.log("useEffect [isClient]: Invalid or finished game state in localStorage, clearing.");
             localStorage.removeItem(STORAGE_KEY_GAME_STATE);
           }
         } catch (e) {
-          console.error(
-            "useEffect [localStorage]: Failed to parse saved game state:",
-            e
-          );
+          console.error("useEffect [isClient]: Failed to parse saved game state:", e);
           localStorage.removeItem(STORAGE_KEY_GAME_STATE);
         }
       } else {
-        console.log("useEffect [localStorage]: No saved game state found.");
+        console.log("useEffect [isClient]: No saved game state found in localStorage.");
       }
-    } else {
-      console.log(
-        "useEffect [localStorage]: Loader started game or game already started in state, skipping localStorage load."
-      );
+    } else if (loaderData.newGameData) {
+       console.log("useEffect [isClient]: New game data provided by loader, skipping localStorage load.");
+       // Clear any potentially stale localStorage if loader provided new game
+       localStorage.removeItem(STORAGE_KEY_GAME_STATE);
+    } else if (loaderData.loaderIndicatesActiveGame) {
+        console.log("useEffect [isClient]: Loader indicates active game via URL, skipping localStorage load (loader/state effects will handle).");
+        // Potentially clear localStorage here too if URL should always be the source of truth on refresh
+        // localStorage.removeItem(STORAGE_KEY_GAME_STATE);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialLoaderData.gameStarted]); // Run only when loader's initial state is known
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Runs only once on mount
 
-  // Effect 3: Save state to localStorage
+  // Effect 2: Process New Game Data from Loader
+  React.useEffect(() => {
+    if (loaderData.newGameData) {
+      console.log("useEffect [loaderData.newGameData]: New game data received from loader. Setting up game state.");
+      const { image: newImage, maxAttempts: newMax, winThreshold: newThreshold, userInput: newUserInput } = loaderData.newGameData;
+      setGameState({
+        image: newImage,
+        chatHistory: [],
+        correctFeatures: [],
+        gameFinished: false,
+        gameStarted: true,
+        attemptsRemaining: newMax,
+        maxAttempts: newMax,
+        winThreshold: newThreshold,
+        userInput: newUserInput,
+      });
+      // Update URL with the new imageId and settings
+      const searchParams = new URLSearchParams();
+      searchParams.set("imageId", String(newImage.id));
+      searchParams.set("attempts", String(newMax));
+      searchParams.set("threshold", String(newThreshold));
+      // Persist user input settings in URL for potential refresh/restoration
+      searchParams.set("topic", newUserInput.topic);
+      searchParams.set("difficulty", newUserInput.level);
+      searchParams.set("style", newUserInput.style);
+      searchParams.set("age", newUserInput.age);
+
+      window.history.replaceState(null, "", `?${searchParams.toString()}`);
+
+      // Clear localStorage explicitly when a new game starts
+      if (isClient) {
+        localStorage.removeItem(STORAGE_KEY_GAME_STATE);
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaderData.newGameData, isClient]); // Depend on newGameData and isClient
+
+  // Effect 3: Handle Loader Updates for Non-New-Game Scenarios (e.g., Reset, Refresh)
+  React.useEffect(() => {
+    // This effect should NOT run if newGameData was just processed
+    if (!loaderData.newGameData) {
+      // --- ADDED LOG ---
+      console.log("useEffect [loaderData flags]: Running check. Loader indicates active game:", loaderData.loaderIndicatesActiveGame, "Component game started:", gameState.gameStarted);
+
+      // Scenario A: Loader indicates NO active game (e.g., after reset, initial load)
+      // AND the component state currently thinks a game IS active. Reset component state.
+      if (!loaderData.loaderIndicatesActiveGame && gameState.gameStarted) {
+        console.log("useEffect [loaderData flags]: Loader indicates no active game, but component state has one. Resetting component state.");
+        setGameState(prev => ({
+          ...prev,
+          image: null,
+          chatHistory: [],
+          correctFeatures: [],
+          gameFinished: false,
+          gameStarted: false,
+          userInput: null,
+          // Update attempts/threshold to defaults from loader
+          attemptsRemaining: loaderData.initialStateData?.maxAttempts ?? 10,
+          maxAttempts: loaderData.initialStateData?.maxAttempts ?? 10,
+          winThreshold: loaderData.initialStateData?.winThreshold ?? 4,
+        }));
+        if (isClient) {
+          localStorage.removeItem(STORAGE_KEY_GAME_STATE);
+        }
+      }
+      // Scenario B: Loader indicates an active game (e.g., on refresh)
+      // AND component state also has an active game (likely restored from previous state or just started)
+      // AND the image IDs match. Just update settings like attempts/threshold if they changed in URL.
+      else if (loaderData.loaderIndicatesActiveGame && gameState.gameStarted && gameState.image) {
+         const urlImageId = isClient ? new URL(window.location.href).searchParams.get("imageId") : null;
+         if (urlImageId && String(gameState.image.id) === urlImageId) {
+            console.log("useEffect [loaderData flags]: Loader indicates active game, component state matches. Updating settings from loader.");
+            setGameState(prev => ({
+                ...prev,
+                maxAttempts: loaderData.initialStateData?.maxAttempts ?? prev.maxAttempts,
+                winThreshold: loaderData.initialStateData?.winThreshold ?? prev.winThreshold,
+                // Only update attemptsRemaining if it hasn't been changed by gameplay
+                // This logic might need refinement depending on desired refresh behavior
+            }));
+         } else if (urlImageId) {
+             console.warn("useEffect [loaderData flags]: Loader indicates active game, but image ID mismatch between URL and component state. This might happen briefly during state transitions or if URL was manually changed. State likely restored from localStorage or previous render. Ignoring loader settings update for now.");
+             // Potentially force a reload or reset here if mismatch is critical and persists
+         } else {
+             console.log("useEffect [loaderData flags]: Loader indicates active game, but component state has image. URL imageId missing (maybe SSR?). Skipping settings update.");
+         }
+      }
+      // Scenario C: Initial load state (loader indicates no active game, component state has no active game)
+      else if (!loaderData.loaderIndicatesActiveGame && !gameState.gameStarted) {
+          console.log("useEffect [loaderData flags]: Initial setup screen state confirmed.");
+          // Ensure defaults are set
+          setGameState(prev => ({
+              ...prev,
+              maxAttempts: loaderData.initialStateData?.maxAttempts ?? 10,
+              winThreshold: loaderData.initialStateData?.winThreshold ?? 4,
+          }));
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaderData.loaderIndicatesActiveGame, loaderData.initialStateData, gameState.gameStarted, isClient]); // Depend on loader flags and gameStarted
+
+
+  // Effect 4: Save state to localStorage
   React.useEffect(() => {
     // Only save if client-side, game is started, and not finished
-    if (isClient && gameStarted && !gameFinished) {
-      console.log(
-        "useEffect [gameState]: Saving active game state to localStorage"
-      );
-      localStorage.setItem(STORAGE_KEY_GAME_STATE, JSON.stringify(gameState));
+    if (isClient && gameStarted && !gameFinished && image) {
+      console.log("useEffect [gameState]: Saving active game state to localStorage");
+      // Save the relevant parts of the state
+      const stateToSave: GameState = {
+          image: gameState.image,
+          chatHistory: gameState.chatHistory,
+          correctFeatures: gameState.correctFeatures,
+          gameFinished: gameState.gameFinished,
+          gameStarted: gameState.gameStarted,
+          attemptsRemaining: gameState.attemptsRemaining,
+          maxAttempts: gameState.maxAttempts,
+          winThreshold: gameState.winThreshold,
+          userInput: gameState.userInput,
+      };
+      localStorage.setItem(STORAGE_KEY_GAME_STATE, JSON.stringify(stateToSave));
     }
     // Clean up localStorage if game finishes or resets
     else if (isClient && (gameFinished || !gameStarted)) {
       if (localStorage.getItem(STORAGE_KEY_GAME_STATE)) {
-        console.log(
-          "useEffect [gameState]: Game finished or reset, removing from localStorage"
-        );
+        console.log("useEffect [gameState]: Game finished or reset, removing from localStorage");
         localStorage.removeItem(STORAGE_KEY_GAME_STATE);
       }
     }
-  }, [gameState, isClient, gameStarted, gameFinished]); // Depend on the whole gameState
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gameState, isClient]); // Depend on the whole gameState
 
-  // Effect 4: Process fetcher data (from API route response)
+  // Effect 5: Process fetcher data (from API route response)
   React.useEffect(() => {
-    // Only process if fetcher has new data
-    if (fetcher.data) {
-      console.log(
-        "useEffect [fetcher.data]: Processing fetcher response:",
-        fetcher.data
-      );
-      // Destructure data returned by api.chat.ts's action
+    if (fetcher.data && fetcher.state === 'idle') { // Process only when fetcher is done
+      console.log("useEffect [fetcher.data]: Processing fetcher response:", fetcher.data);
       const {
-        message,
-        hint,
+        message, // Use the combined message field
         error,
         gameFinished: finished,
         correctFeatures: newFeatures,
@@ -530,63 +439,87 @@ export default function Index() {
       } = fetcher.data;
 
       setGameState((prev) => {
-        const newHistory = [...prev.chatHistory];
-        // Add message/hint/error from the API route's response to chat history
-        if (message)
-          newHistory.push({ role: "model", text: "Gemini: " + message });
-        else if (hint) newHistory.push({ role: "model", text: hint });
-        else if (error)
-          newHistory.push({ role: "model", text: `Error: ${error}` }); // Display API errors
+        // --- ADDED LOG ---
+        console.log("useEffect [fetcher.data]: Updating state. Current image ID:", prev.image?.id);
 
-        // Update game state based on API response (only if values are provided)
-        // This assumes the API route will eventually return game state updates
-        return {
+        // Ensure we don't process if game isn't started (edge case)
+        if (!prev.gameStarted) {
+            console.log("useEffect [fetcher.data]: Game not started, skipping state update.");
+            return prev;
+        }
+
+        const newHistory = [...prev.chatHistory];
+        // Avoid adding duplicate model messages if effect runs multiple times
+        const lastMessage = newHistory[newHistory.length - 1];
+        const newMessageText = message ? "Gemini: " + message : error ? `Error: ${error}` : null;
+
+        if (newMessageText && (!lastMessage || lastMessage.role !== 'model' || lastMessage.text !== newMessageText)) {
+            newHistory.push({ role: "model", text: newMessageText });
+        } else if (newMessageText) {
+            console.log("useEffect [fetcher.data]: Skipping duplicate model message.");
+        }
+
+
+        // Determine if the game is over based on the response
+        const isGameOver = remaining !== undefined && remaining <= 0;
+        const isWin = finished && !isGameOver; // Win only if finished and not game over
+
+        const nextState = {
           ...prev,
           chatHistory: newHistory,
+          // Only update if the API provided new values
           correctFeatures: newFeatures ?? prev.correctFeatures,
           gameFinished: finished ?? prev.gameFinished,
           attemptsRemaining: remaining ?? prev.attemptsRemaining,
           // Don't modify gameStarted or image here
         };
+
+        // --- ADDED LOG ---
+        console.log("useEffect [fetcher.data]: State updated. Next image ID:", nextState.image?.id);
+        if (prev.image?.id !== nextState.image?.id) {
+            console.error("useEffect [fetcher.data]: !!! IMAGE ID CHANGED UNEXPECTEDLY !!!");
+        }
+
+        return nextState;
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fetcher.data]); // Depend only on fetcher.data
+  }, [fetcher.data, fetcher.state]); // Depend on fetcher.data AND fetcher.state
 
-  // Effect 5: Auto-scroll chat
+  // Effect 6: Auto-scroll chat
   React.useEffect(() => {
-    chatContainerRef.current?.scrollTo(
-      0,
-      chatContainerRef.current.scrollHeight
-    );
+    chatContainerRef.current?.scrollTo(0, chatContainerRef.current.scrollHeight);
   }, [chatHistory]); // Depend only on chatHistory
 
   // --- Event Handlers ---
 
   const handleStartGame = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    console.log("handleStartGame called");
+    console.log("handleStartGame: Form submitted.");
     const formData = new FormData(event.currentTarget);
-    // Clear any potentially stale game state from localStorage before starting anew
+    // Clear localStorage before starting a new game via loader
     if (isClient) {
+      console.log("handleStartGame: Clearing localStorage.");
       localStorage.removeItem(STORAGE_KEY_GAME_STATE);
     }
-    console.log(
-      "handleStartGame: Submitting form via GET to trigger loader with new params..."
-    );
-    submit(formData, { method: "get", action: "/" }); // Submit to root loader
+    // Clear component state immediately for better UX, loader will confirm
+    setGameState(prev => ({
+        ...prev,
+        gameStarted: false,
+        image: null,
+        chatHistory: [],
+        correctFeatures: [],
+        gameFinished: false,
+        userInput: null,
+    }));
+    console.log("handleStartGame: Submitting form via GET to trigger loader with new game params...");
+    // Submit to the loader by navigating with GET parameters
+    submit(formData, { method: "get", action: "/" });
   };
 
   const handleSendMessage = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (
-      !currentInput.trim() ||
-      !image ||
-      isSubmittingChat ||
-      gameFinished ||
-      attemptsRemaining <= 0
-    )
-      return;
+    if (!currentInput.trim() || !image || isSubmittingChat || gameFinished || attemptsRemaining <= 0) return;
 
     const userMessage = currentInput.trim();
 
@@ -601,27 +534,38 @@ export default function Index() {
     const formData = new FormData();
     formData.append("userAttempt", userMessage);
     formData.append("imageFeatures", JSON.stringify(image.features || []));
-    formData.append("chatHistory", JSON.stringify(chatHistory));
+    // Send only the necessary history for the API context
+    const historyForApi = chatHistory.map(entry => ({
+        role: entry.role,
+        parts: [{ text: entry.text.replace(/^(User:|Gemini:)\s*/, '') }] // Remove prefixes for API
+    }));
+    // Add the *current* user message to the history sent to the API
+    historyForApi.push({ role: 'user', parts: [{ text: userMessage }] });
+    formData.append("chatHistory", JSON.stringify(historyForApi));
     formData.append("correctFeatures", JSON.stringify(correctFeatures));
     formData.append("attemptsRemaining", String(attemptsRemaining));
     formData.append("winThreshold", String(winThreshold));
-    formData.append("imageId", String(image.id));
+    // No need to send imageId in form data if it's not used by API action
 
     // Submit using the fetcher to the API route
-    console.log(
-      "handleSendMessage: Submitting fetcher form (POST) to /api/chat..."
-    );
-    fetcher.submit(formData, { method: "post", action: "/api/chat" });
+    console.log("handleSendMessage: Submitting fetcher form (POST) to /api/chat...");
+    // The action URL for the fetcher doesn't need the imageId query param
+    // *** Ensure unstable_skipClientRevalidation: true is present ***
+    fetcher.submit(formData, {
+        method: "post",
+        action: "/api/chat",
+        unstable_skipClientRevalidation: true // Prevent loader re-run
+    });
   };
 
-  const handleResetGame = () => {
-    console.log("handleResetGame called");
+ const handleResetGame = () => {
+    console.log("handleResetGame: Resetting game.");
     // Clear local storage first
     if (isClient) {
       localStorage.removeItem(STORAGE_KEY_GAME_STATE);
     }
-    // Reset component state immediately for responsiveness (will be confirmed by loader)
-    setGameState((prev) => ({
+    // Reset component state immediately
+    setGameState(prev => ({
       ...prev,
       gameStarted: false,
       image: null,
@@ -629,29 +573,35 @@ export default function Index() {
       correctFeatures: [],
       gameFinished: false,
       userInput: null,
-      // Keep attempts/threshold settings? Or reset to defaults? Let loader handle defaults.
+      // Reset attempts/threshold to initial defaults (loader will confirm)
+      attemptsRemaining: loaderData.initialStateData?.maxAttempts ?? 10,
+      maxAttempts: loaderData.initialStateData?.maxAttempts ?? 10,
+      winThreshold: loaderData.initialStateData?.winThreshold ?? 4,
     }));
-    console.log(
-      "handleResetGame: Navigating to / (without params) to reset via loader..."
-    );
-    // Navigate to root without params to trigger loader's setup state
+    console.log("handleResetGame: Navigating to setup screen (clearing URL params)...");
+    // Navigate to the root path without game parameters to trigger loader for setup screen
     submit(null, { method: "get", action: "/" });
   };
 
+
   // --- Render Logic ---
 
-  console.log("Render: State before conditional render:", {
-    isSubmittingStartForm,
-    isSubmittingChat,
-    gameStarted: gameState.gameStarted,
-    imageId: gameState.image?.id,
-    fetcherState: fetcher.state,
-    attemptsRemaining,
-    loaderError: initialLoaderData.error,
-  });
+  // console.log("Render: Current state:", { // Reduced logging noise for render
+  //   isClient,
+  //   gameStarted,
+  //   gameFinished,
+  //   imageId: image?.id,
+  //   attemptsRemaining,
+  //   isSubmittingStartForm,
+  //   isSubmittingChat,
+  //   fetcherState: fetcher.state,
+  //   loaderError: loaderData.error,
+  //   loaderIndicatesActiveGame: loaderData.loaderIndicatesActiveGame,
+  //   hasNewGameData: !!loaderData.newGameData,
+  // });
 
   const showLoadingOverlay = isSubmittingStartForm; // Show overlay only during initial game start submission
-  const showSetupScreen = !gameState.gameStarted || !gameState.image; // Show setup if game not started or image missing
+  const showSetupScreen = !gameStarted; // Show setup if game not started in component state
 
   return (
     <div className="flex flex-col h-screen bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100 font-sans relative">
@@ -672,13 +622,13 @@ export default function Index() {
 
       <main className="flex-1 overflow-hidden p-2 sm:p-4">
         {/* Display Loader Error on Setup Screen */}
-        {initialLoaderData.error && showSetupScreen ? (
+        {loaderData.error && showSetupScreen ? (
           <div className="flex justify-center items-center h-full">
             <div className="p-6 text-red-600 bg-red-100 dark:bg-red-900 dark:text-red-200 rounded max-w-md mx-auto text-center shadow">
               <h2 className="text-lg font-semibold mb-2">
                 Error Starting Game
               </h2>
-              <p>{initialLoaderData.error}</p>
+              <p>{loaderData.error}</p>
               <button
                 onClick={handleResetGame} // Use reset handler
                 className="mt-4 bg-blue-600 text-white p-2 rounded-lg hover:bg-blue-700 transition-colors text-sm focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 dark:focus:ring-offset-gray-800"
@@ -727,7 +677,7 @@ export default function Index() {
                   </label>
                   <select
                     id="level"
-                    name="difficulty"
+                    name="difficulty" // Name matches loader param
                     defaultValue={userInput?.level ?? "easy"}
                     required
                     className="w-full p-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 focus:ring-blue-500 focus:border-blue-500"
@@ -783,10 +733,7 @@ export default function Index() {
                     id="attempts"
                     name="attempts"
                     // Use default from loader if no user input yet
-                    defaultValue={
-                      userInput?.attempts ??
-                      String(initialLoaderData.maxAttempts)
-                    }
+                    defaultValue={String(gameState.maxAttempts)}
                     min="1"
                     max="50"
                     required
@@ -805,10 +752,7 @@ export default function Index() {
                     id="threshold"
                     name="threshold"
                     // Use default from loader if no user input yet
-                    defaultValue={
-                      userInput?.threshold ??
-                      String(initialLoaderData.winThreshold)
-                    }
+                    defaultValue={String(gameState.winThreshold)}
                     min="1"
                     max="20" // Set a reasonable max
                     required
@@ -835,19 +779,16 @@ export default function Index() {
               </h2>
               {/* Image Display Area */}
               <div className="flex-grow flex justify-center items-center min-h-[200px] mb-3 overflow-hidden relative bg-gray-200 dark:bg-gray-700 rounded">
-                {image && (
+                {image ? (
                   <img
                     key={image.id} // Use image ID as key to force re-render on change
                     src={image.url}
                     alt={image.alt || "Generated image"}
-                    // Apply fade-in effect, ensure opacity is correct based on loading state
-                    className={`max-w-full max-h-full object-contain rounded transition-opacity duration-500 ease-in-out ${
-                      showLoadingOverlay ? "opacity-0" : "opacity-100"
-                    }`}
+                    className={`max-w-full max-h-full object-contain rounded transition-opacity duration-500 ease-in-out opacity-100`} // Assume loaded if image exists
                   />
+                ) : (
+                   <div className="text-gray-500 dark:text-gray-400">Loading image...</div> // Placeholder if image is somehow null but gameStarted is true
                 )}
-                {/* Spinner specifically for image loading (if needed, though showLoadingOverlay covers initial load) */}
-                {/* Consider adding a spinner here if image loading itself is slow */}
               </div>
               {/* Game Info Section */}
               <div className="text-xs sm:text-sm text-gray-600 dark:text-gray-400 w-full flex-shrink-0 border-t dark:border-gray-700 pt-3 mt-auto space-y-1">
@@ -880,20 +821,23 @@ export default function Index() {
                 {/* Feature List */}
                 {image?.features && image.features.length > 0 ? (
                   <ul className="list-disc pl-5 text-xs">
-                    {image.features.map((feature) => (
-                      <li
-                        key={feature}
-                        className={`transition-colors ${
-                          correctFeatures.includes(feature.toLowerCase())
-                            ? "text-green-600 dark:text-green-400 line-through"
-                            : "text-gray-500 dark:text-gray-400"
-                        }`}
-                      >
-                        {correctFeatures.includes(feature.toLowerCase())
-                          ? feature
-                          : "???"}
-                      </li>
-                    ))}
+                    {image.features.map((feature) => {
+                       // Normalize both feature and found features for comparison
+                       const lowerFeature = feature.toLowerCase();
+                       const found = correctFeatures.some(cf => cf.toLowerCase() === lowerFeature);
+                       return (
+                          <li
+                            key={feature} // Use original feature name as key
+                            className={`transition-colors ${
+                              found
+                                ? "text-green-600 dark:text-green-400 line-through"
+                                : "text-gray-500 dark:text-gray-400"
+                            }`}
+                          >
+                            {found ? feature : "???"}
+                          </li>
+                       );
+                    })}
                   </ul>
                 ) : (
                   <p className="text-xs text-gray-400 italic">
@@ -901,9 +845,9 @@ export default function Index() {
                   </p>
                 )}
                 {/* Display loader errors that occurred during generation but didn't prevent game start */}
-                {initialLoaderData.error && !showSetupScreen && (
+                {loaderData.error && !showSetupScreen && (
                   <p className="text-xs text-yellow-600 dark:text-yellow-400 mt-1">
-                    Note: {initialLoaderData.error}
+                    Note: {loaderData.error}
                   </p>
                 )}
               </div>
@@ -937,8 +881,8 @@ export default function Index() {
                     <div
                       className={`p-2.5 rounded-lg max-w-[85%] w-fit text-sm shadow-sm break-words ${
                         msg.role === "user"
-                          ? "chat-message-user"
-                          : "chat-message-gemini"
+                          ? "chat-message-user bg-blue-500 text-white dark:bg-blue-600" // Example user styling
+                          : "chat-message-gemini bg-gray-200 text-gray-800 dark:bg-gray-600 dark:text-gray-100" // Example Gemini styling
                       }`}
                     >
                       {/* Render newlines correctly */}
@@ -953,7 +897,7 @@ export default function Index() {
                 {/* Thinking Indicator */}
                 {isSubmittingChat && (
                   <div className="flex justify-start">
-                    <div className="p-2.5 rounded-lg chat-message-gemini text-gray-600 dark:text-gray-400 text-sm italic w-fit shadow-sm">
+                    <div className="p-2.5 rounded-lg bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-400 text-sm italic w-fit shadow-sm">
                       Gemini is thinking...
                     </div>
                   </div>
@@ -976,7 +920,7 @@ export default function Index() {
               <fetcher.Form
                 onSubmit={handleSendMessage}
                 method="post"
-                action="/api/chat"
+                action="/api/chat" // Action targets the API route
                 className="mt-auto flex-shrink-0"
               >
                 <div className="flex items-center gap-2 border border-gray-300 dark:border-gray-600 rounded-lg p-2 focus-within:ring-2 focus-within:ring-blue-500">
@@ -1026,6 +970,12 @@ export default function Index() {
                     </svg>
                   </button>
                 </div>
+                {/* Display fetcher errors directly */}
+                 {fetcher.data?.error && (
+                    <p className="text-xs text-red-500 dark:text-red-400 mt-1 text-center">
+                        Chat Error: {fetcher.data.error}
+                    </p>
+                 )}
               </fetcher.Form>
             </div>
           </div>
