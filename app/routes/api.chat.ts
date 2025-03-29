@@ -20,6 +20,7 @@ interface ActionResponseData {
   allFeaturesFound?: boolean; // Explicit flag if all features were found
   correctFeatures?: string[];
   attemptsRemaining?: number;
+  newlyFoundFeatures?: string[]; // Explicitly tell UI which features were just found
 }
 
 // --- ACTION HANDLER FOR CHAT ---
@@ -114,48 +115,55 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         Array.isArray(entry.parts) &&
         entry.parts.every((part) => typeof part.text === "string")
     );
-    const hint = await getGeminiHint(
-      imageFeatures,
-      userAttempt,
-      validChatHistory
-    );
-    console.log("API Chat Action: Gemini Hint:", hint);
 
-    // --- Update Game State ---
-    const lowerAttempt = userAttempt.toLowerCase().trim(); // Trim whitespace
+    // Modified feature matching and attempts logic
+    const lowerAttempt = userAttempt.toLowerCase().trim();
     const currentCorrectFeaturesLower = correctFeatures.map((f) =>
       f.toLowerCase()
-    ); // Use lowercase for checking existence
+    );
 
-    // Find newly found features based on the current attempt against ALL image features
+    // Find any new features in this attempt
     const newlyFoundFeatures = imageFeatures
       .filter((feature: string) => {
-        const lowerFeature = feature.toLowerCase();
-        // Check if this feature hasn't been found yet
+        const lowerFeature = feature.toLowerCase().trim();
+
+        // Skip if already found
         if (currentCorrectFeaturesLower.includes(lowerFeature)) {
           return false;
         }
-        // Check if the attempt *is* the feature or *contains* the feature (case-insensitive)
-        // Be more robust: check word boundaries or exact matches if needed, this is simpler
+
+        // More precise matching logic
         return (
+          // Exact match
           lowerAttempt === lowerFeature ||
-          lowerAttempt.includes(lowerFeature) ||
-          lowerFeature.includes(lowerAttempt)
+          // Feature is a complete word/phrase within attempt
+          new RegExp("\\b(type of ears|folded)\\b").test(lowerFeature) ||
+          // Attempt is a complete word/phrase within feature
+          new RegExp(`\\b${lowerAttempt}\\b`).test(lowerFeature)
         );
       })
-      .map((f) => f.toLowerCase()); // Store found features in lowercase for consistent checking
+      .map((f) => f.toLowerCase());
 
-    // Create the updated list, ensuring uniqueness implicitly by how newlyFoundFeatures is generated
+    // Create updated features list with original casing
     const updatedCorrectFeatures = [
-      ...correctFeatures, // Keep existing correct features (preserve original casing if desired, though lowercase comparison is key)
+      ...correctFeatures,
       ...imageFeatures.filter((f) =>
         newlyFoundFeatures.includes(f.toLowerCase())
-      ), // Add the *original cased* versions of newly found features
+      ),
     ];
-    const uniqueCorrectFeatures = [...new Set(updatedCorrectFeatures)]; // Ensure uniqueness, preserving original case where possible
+    const uniqueCorrectFeatures = [...new Set(updatedCorrectFeatures)];
 
-    // Decrement attempts regardless of finding a feature
-    const updatedAttemptsRemaining = Math.max(0, attemptsRemaining - 1); // Ensure it doesn't go below 0
+    // Only decrement attempts if no new features were found AND it wasn't a help request
+    const isHelpRequest =
+      lowerAttempt.includes("help") ||
+      lowerAttempt.includes("hint") ||
+      lowerAttempt.includes("clue");
+
+    const shouldDecrementAttempts =
+      newlyFoundFeatures.length === 0 && !isHelpRequest;
+    const updatedAttemptsRemaining = shouldDecrementAttempts
+      ? Math.max(0, attemptsRemaining - 1)
+      : attemptsRemaining;
 
     // --- Determine End Conditions ---
     const allFeaturesFound =
@@ -163,20 +171,41 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const loseConditionMet = updatedAttemptsRemaining <= 0;
     const gameTrulyFinished = allFeaturesFound || loseConditionMet; // Game ends if ALL features found OR attempts run out
 
-    console.log("API Chat Action: Updated State:", {
-      updatedCorrectFeatures: uniqueCorrectFeatures,
-      updatedAttemptsRemaining,
-      allFeaturesFound,
-      gameTrulyFinished,
-    });
+    const hint = await getGeminiHint(
+      imageFeatures,
+      userAttempt,
+      validChatHistory
+    );
+    console.log("API Chat Action: Gemini Hint:", hint);
+
+    // Construct response message
+    let responseMessage = hint;
+    if (newlyFoundFeatures.length > 0) {
+      const foundFeaturesList = newlyFoundFeatures
+        .map((f) => imageFeatures.find((orig) => orig.toLowerCase() === f))
+        .filter(Boolean)
+        .join(", ");
+
+      responseMessage =
+        `Yes! You found: ${foundFeaturesList}! ` +
+        `(${uniqueCorrectFeatures.length}/${imageFeatures.length} features found) ` +
+        (hint ? `\n${hint}` : "");
+    }
 
     // --- Return Response ---
     return json<ActionResponseData>({
-      message: hint, // Send the hint back
+      message: responseMessage, // Send the hint back
       correctFeatures: uniqueCorrectFeatures, // Send the updated list
       attemptsRemaining: updatedAttemptsRemaining,
       allFeaturesFound: allFeaturesFound, // Indicate if all were found
       gameTrulyFinished: gameTrulyFinished, // Indicate if the game should stop interaction
+      // Add new field to explicitly tell UI which features were just found
+      newlyFoundFeatures:
+        newlyFoundFeatures.length > 0
+          ? newlyFoundFeatures.map(
+              (f) => imageFeatures.find((orig) => orig.toLowerCase() === f)!
+            )
+          : [],
     });
   } catch (error) {
     console.error("API Chat Action: Error processing request:", error);

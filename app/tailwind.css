@@ -24,6 +24,75 @@ body {
 }
 
 /* Typing animation styles - for loading indicator */
+/* Feature discovery animation styles */
+@keyframes featureFound {
+    0% {
+        transform: scale(1);
+        opacity: 1;
+    }
+    50% {
+        transform: scale(1.15);
+        background-color: rgba(34, 197, 94, 0.1); /* green-500 with low opacity */
+        opacity: 0.9;
+    }
+    100% {
+        transform: scale(1);
+        opacity: 1;
+    }
+}
+
+.feature-found {
+    animation: featureFound 1s ease-in-out;
+}
+
+@keyframes sparkle {
+    0%, 100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.5;
+    }
+}
+
+.feature-sparkle::after {
+    content: "✨";
+    margin-left: 0.25rem;
+    display: inline-block;
+    animation: sparkle 1s ease-in-out infinite;
+}
+
+/* Smooth transition for feature reveal */
+.feature-reveal {
+    transition: all 0.3s ease-in-out;
+}
+.feature-reveal:hover {
+    transform: translateX(2px);
+}
+
+/* Feature list highlight effects */
+.feature-correct {
+    @apply text-green-600 dark:text-green-400;
+    position: relative;
+}
+
+.feature-correct::before {
+    content: '';
+    position: absolute;
+    left: -1rem;
+    top: 50%;
+    width: 0.5rem;
+    height: 0.5rem;
+    background-color: currentColor;
+    border-radius: 50%;
+    transform: translateY(-50%) scale(0);
+    animation: dotAppear 0.3s ease-out forwards;
+}
+
+@keyframes dotAppear {
+    to {
+        transform: translateY(-50%) scale(1);
+    }
+}
 .typing-indicator {
     width: 40px;
     display: flex;
