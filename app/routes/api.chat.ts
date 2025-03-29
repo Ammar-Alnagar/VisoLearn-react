@@ -1,6 +1,7 @@
 import type { ActionFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
 // Keep ActionData definition here or import from a shared types file if needed later
+import { getGeminiHint } from "~/utils/gemini.server";
 interface ActionData {
   hint?: string;
   error?: string;
@@ -25,14 +26,45 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const userAttempt = formData.get("userAttempt") as string;
     console.log("API Chat Action: User Attempt Received:", userAttempt);
 
-    // Return a simple success message (using the simplified logic for now)
-    return json<ActionData>({ message: `API route received: ${userAttempt}` });
+    // Get necessary data from form
+    const imageFeatures = JSON.parse(formData.get("imageFeatures") as string || '[]');
+    const chatHistory = JSON.parse(formData.get("chatHistory") as string || '[]');
+      // Format chat history for Gemini API
+      const formattedChatHistory = chatHistory.map((entry: any) => ({
+          role: entry.role === 'user' ? 'user' : 'model',
+          parts: [{ text: entry.text }]
+      }));
+    const attemptsRemaining = parseInt(formData.get("attemptsRemaining") as string || '0', 10);
 
-    // --- LATER: Restore original action logic here ---
-    // const imageFeaturesString = formData.get("imageFeatures") as string;
-    // const currentHistoryRaw = JSON.parse(formData.get("chatHistory") as string || '[]');
-    // ... rest of the original action logic ...
-    // return json<ActionData>({ hint, gameFinished, ... });
+    // Get hint from Gemini
+    const hint = await getGeminiHint(imageFeatures, userAttempt, formattedChatHistory);
+    
+    // Check if any features were identified in this attempt
+    const lowerAttempt = userAttempt.toLowerCase();
+    const newlyFoundFeatures = imageFeatures.filter(
+      (feature: string) => 
+        feature.toLowerCase().includes(lowerAttempt) || 
+        lowerAttempt.includes(feature.toLowerCase())
+    );
+
+    // Update game state
+    const updatedCorrectFeatures = [
+      ...JSON.parse(formData.get("correctFeatures") as string || '[]'),
+      ...newlyFoundFeatures
+    ];
+    const updatedAttemptsRemaining = attemptsRemaining - 1;
+    const winThreshold = parseInt(formData.get("winThreshold") as string || '4', 10);
+    const gameFinished = 
+      updatedCorrectFeatures.length >= winThreshold || 
+      updatedAttemptsRemaining <= 0;
+
+    return json<ActionData>({
+      message: hint,
+      correctFeatures: updatedCorrectFeatures,
+      attemptsRemaining: updatedAttemptsRemaining,
+      gameFinished,
+      isGameOver: updatedAttemptsRemaining <= 0
+    });
 
   } catch (error) {
     console.error("API Chat Action: Error processing request:", error);
