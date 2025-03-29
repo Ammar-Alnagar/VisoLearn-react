@@ -2,7 +2,7 @@
 
 
 <div style="width: 100%; text-align: center;">
-    <img src="logo.jpeg" alt="VisoLearn Logo" width="400" style="display: block; margin: auto; border-radius: 10px;">
+    <img src="logo.jpeg" alt="VisoLearn Logo" width="800" style="display: block; margin: auto; border-radius: 10px;">
 </div>
 
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
