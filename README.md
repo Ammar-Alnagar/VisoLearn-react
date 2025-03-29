@@ -2,7 +2,7 @@
 
 
 
-<img src="logo.jpeg" alt="VisoLearn Logo" width="400" style="display: block; margin: auto;">
+<img src="logo.jpeg" alt="VisoLearn Logo" width="400" style="display: block; margin: auto;border-radius: 10px;">
 
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
