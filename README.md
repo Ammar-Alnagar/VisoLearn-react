@@ -5,6 +5,7 @@
     <img src="logo.jpeg" alt="VisoLearn Logo" width="800" style="display: block; margin: auto; border-radius: 10px;">
 </div>
 
+
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![React](https://img.shields.io/badge/React-20232A?style=flat-square&logo=react&logoColor=61DAFB)](https://reactjs.org/)
