@@ -374,71 +374,164 @@ The data flow primarily revolves around the user initiating actions and the clie
 **1. Start New Game Flow:**
 
 ```mermaid
-graph TD
-    A[User Opens App / Clicks New Game] --> B{Game Active in Local Storage?};
-    B -- Yes --> C[Clear Local Storage];
-    B -- No --> D[Show Setup Form];
-    C --> D;
-    D --> E[User Fills Form (Topic, Difficulty, etc.)];
-    E --> F[User Submits Form];
-    F --> G[Client: Submit GET Request to Loader (with startNewGame=true)];
-    G --> H[Server (Loader): Receive Params];
-    H --> I[Server: Call Gemini API (Generate Image & Features)];
-    I --> J[Server (Loader): Receive Image Data];
-    J --> K[Server (Loader): Return newGameData];
-    K --> L[Client: Receive newGameData];
-    L --> M[Client: Initialize GameState];
-    M --> N[Client: Update URL (add imageId)];
-    N --> O[Client: Display Game Screen];
+flowchart TD
+    A([Start]) --> B{Game Active in<br/>Local Storage?}
+    B -->|Yes| C[Clear Local Storage]
+    B -->|No| D[Show Setup Form]
+    C --> D
+    D --> E[User Fills Form<br/>Topic, Difficulty]
+    E --> F[User Submits Form]
+    F --> G[Submit GET Request<br/>startNewGame=true]
+    G --> H[Loader Receives<br/>Parameters]
+    H --> I[Call Gemini API<br/>Generate Content]
+    I --> J[Receive Image Data]
+    J --> K[Return newGameData]
+    K --> L[Initialize GameState]
+    L --> M[Update URL with imageId]
+    M --> N[Display Game Screen]
 ```
 
-**2. Handle User Chat Message Flow:**
+**2. User Chat Message Flow:**
 
 ```mermaid
-graph TD
-    A[User Types Message & Submits] --> B{Input Valid & Game Active?};
-    B -- No --> C[Do Nothing];
-    B -- Yes --> D[Client: Optimistically Add User Message to Chat History];
-    D --> E[Client: Send POST Request to /api/chat (via Fetcher)];
-    E --> F[Server (Action): Receive Data (Attempt, State, History)];
-    F --> G[Server: Call Gemini API (Get Hint/Response)];
-    G --> H[Server (Action): Receive Gemini Response];
-    H --> I[Server: Check Attempt vs Features];
-    I --> J{New Features Found?};
-    J -- Yes --> K[Update Correct Features];
-    J -- No --> L{Help Request?};
-    L -- No --> M[Decrement Attempts Remaining];
-    L -- Yes --> N[Keep Attempts];
-    K --> N;
-    M --> N;
-    N --> O[Server: Check End Conditions (All Found / No Attempts)];
-    O --> P[Server (Action): Prepare Response JSON (Message, State Updates)];
-    P --> Q[Server: Return JSON Response];
-    Q --> R[Client: Receive Fetcher Data];
-    R --> S[Client: Update GameState (Chat, Features, Attempts, Status)];
-    S --> T[Client: Display Gemini Message & Updated UI];
+flowchart TD
+    A([Start]) --> B{Valid Input &<br/>Game Active?}
+    B -->|No| C[Ignore Input]
+    B -->|Yes| D[Add Message to<br/>Chat History]
+    D --> E[POST to /api/chat]
+    E --> F[Process Request]
+    F --> G[Generate AI Response]
+    G --> H[Check Features]
+    H --> I{Features Found?}
+    I -->|Yes| J[Update Score]
+    I -->|No| K{Help Request?}
+    K -->|Yes| L[Keep Attempts]
+    K -->|No| M[Decrement Attempts]
+    J & L & M --> N[Check Game End]
+    N --> O[Send Response]
+    O --> P[Update UI State]
 ```
 
-**3. Restore Game State Flow:**
+**3. Game State Restoration:**
 
 ```mermaid
-graph TD
-    A[User Navigates to App URL] --> B{URL has imageId?};
-    B -- No --> C[Show Setup Screen];
-    B -- Yes --> D[Client Mounts (`_index.tsx`)] ;
-    D --> E{Local Storage has Saved State?};
-    E -- No --> F[Show Setup Screen (or handle loader error)];
-    E -- Yes --> G[Parse Saved State];
-    G --> H{Saved State imageId === URL imageId?};
-    H -- No --> I[Clear Local Storage];
-    I --> F;
-    H -- Yes --> J{Game Finished in Saved State?};
-    J -- Yes --> K[Clear Local Storage];
-    K --> F;
-    J -- No --> L[Restore GameState from Local Storage];
-    L --> M[Apply Loader Config (Attempts/Threshold)];
-    M --> N[Display Game Screen with Restored State];
+flowchart TD
+    A([Start]) --> B{URL has imageId?}
+    B -->|No| C[Show Setup]
+    B -->|Yes| D[Mount Component]
+    D --> E{Saved State<br/>Exists?}
+    E -->|No| F[New Game]
+    E -->|Yes| G[Parse State]
+    G --> H{IDs Match?}
+    H -->|No| I[Clear Storage]
+    H -->|Yes| J{Game Finished?}
+    J -->|Yes| K[Clear Storage]
+    J -->|No| L[Restore State]
+    I & K --> F
+    L --> M[Apply Config]
+    M --> N[Show Game]
+```
 
+**4. Feature Detection System:**
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant C as Client
+    participant S as Server
+    participant AI as Gemini AI
+
+    U->>C: Enter Description
+    C->>S: POST /api/chat
+    S->>AI: Analyze Input
+    AI->>S: Feature Matches
+    S->>S: Compare with Targets
+    S->>C: Update Results
+    C->>U: Show Feedback
+```
+
+**5. State Management Flow:**
+
+```mermaid
+stateDiagram-v2
+    [*] --> Setup
+    Setup --> Playing: New Game
+    Playing --> Playing: User Input
+    Playing --> EndGame: Win/Lose
+    Playing --> Setup: Reset
+    EndGame --> Setup: Start Over
+    EndGame --> [*]: Exit
+```
+
+**6. Data Architecture Overview:**
+
+```mermaid
+graph LR
+    A[Client State] --> B[Local Storage]
+    A --> C[UI Components]
+    D[Server APIs] --> E[Gemini AI]
+    D --> A
+    F[URL State] --> A
+    G[Game Logic] --> A
+    G --> D
+```
+**7. Error Handling Flow:**
+```mermaid
+flowchart TD
+    A([Error Occurs]) --> B{Error Type?}
+    B -->|API Error| C[Retry Logic]
+    B -->|Network Error| D[Connection Check]
+    B -->|Game Logic| E[State Recovery]
+
+    C --> F{Retry Success?}
+    F -->|Yes| G[Resume Game]
+    F -->|No| H[Show Error UI]
+
+    D --> I{Online?}
+    I -->|Yes| J[Retry Operation]
+    I -->|No| K[Offline Mode]
+
+    E --> L[Save State]
+    L --> M[Reset Game]
+```
+
+**8. Game Initialization Sequence:**
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant C as Client
+    participant R as Remix Server
+    participant G as Gemini API
+
+    U->>C: Start Game
+    C->>R: Request Setup
+    R->>G: Generate Image
+    G-->>R: Image Data
+    R->>G: Extract Features
+    G-->>R: Feature List
+    R-->>C: Game Config
+    C->>C: Initialize State
+    C-->>U: Show Game UI
+```
+
+**9. State Updates & Effects:**
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> Initial
+    Initial --> Setup: User Input
+    Setup --> Playing: Game Start
+    Playing --> Paused: User Pause
+    Paused --> Playing: Resume
+    Playing --> GameOver: Win/Lose
+    GameOver --> Initial: Restart
+
+    state Playing {
+        [*] --> WaitingInput
+        WaitingInput --> Processing: Submit
+        Processing --> Feedback: AI Response
+        Feedback --> WaitingInput: Continue
+    }
 ```
 ## 📝 License
 
